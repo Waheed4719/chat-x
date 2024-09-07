@@ -86,6 +86,7 @@ kotlin {
     jvmToolchain(17)
 }
 dependencies {
+    implementation(libs.volley)
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
     androidTestImplementation(composeBom)
@@ -111,7 +112,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.util)
     implementation(libs.androidx.compose.ui.viewbinding)
     implementation(libs.androidx.compose.ui.googlefonts)
-
+    implementation(libs.coil.kt.compose)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
     androidTestImplementation(libs.junit)

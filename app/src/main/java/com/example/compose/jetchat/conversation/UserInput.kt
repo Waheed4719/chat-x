@@ -16,7 +16,19 @@
 
 package com.example.compose.jetchat.conversation
 
+import android.Manifest.permission.READ_EXTERNAL_STORAGE
+import android.Manifest.permission.READ_MEDIA_IMAGES
+import android.content.ContentUris
+import android.content.Context
+import android.content.pm.PackageManager
+import android.graphics.drawable.BitmapDrawable
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
@@ -32,6 +44,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -41,6 +54,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -50,6 +64,10 @@ import androidx.compose.foundation.layout.paddingFrom
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -65,6 +83,7 @@ import androidx.compose.material.icons.outlined.Mood
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
@@ -78,6 +97,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -91,10 +114,14 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.FirstBaseline
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.SemanticsPropertyKey
@@ -109,12 +136,20 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.compose.jetchat.FunctionalityNotAvailablePopup
 import com.example.compose.jetchat.R
 import kotlin.math.absoluteValue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.delay
+import coil.ImageLoader
+import coil.compose.AsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import coil.request.SuccessResult
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 enum class InputSelector {
     NONE,
@@ -239,7 +274,7 @@ private fun SelectorExpanded(
         when (currentSelector) {
             InputSelector.EMOJI -> EmojiSelector(onTextAdded, focusRequester)
             InputSelector.DM -> NotAvailablePopup(onCloseRequested)
-            InputSelector.PICTURE -> FunctionalityNotAvailablePanel()
+            InputSelector.PICTURE -> PictureSelector(onPictureSelected = onTextAdded)
             InputSelector.MAP -> FunctionalityNotAvailablePanel()
             InputSelector.PHONE -> FunctionalityNotAvailablePanel()
             else -> {
@@ -413,7 +448,7 @@ private fun UserInputText(
     onMessageSent: (String) -> Unit,
     focusState: Boolean
 ) {
-    val swipeOffset = remember { mutableStateOf(0f) }
+    val swipeOffset = remember { mutableFloatStateOf(0f) }
     var isRecordingMessage by remember { mutableStateOf(false) }
     val a11ylabel = stringResource(id = R.string.textfield_desc)
     Row(
@@ -431,7 +466,7 @@ private fun UserInputText(
         ) { recording ->
             Box(Modifier.fillMaxSize()) {
                 if (recording) {
-                    RecordingIndicator { swipeOffset.value }
+                    RecordingIndicator { swipeOffset.floatValue }
                 } else {
                     UserInputTextField(
                         textFieldValue,
@@ -450,8 +485,8 @@ private fun UserInputText(
         }
         RecordButton(
             recording = isRecordingMessage,
-            swipeOffset = { swipeOffset.value },
-            onSwipeOffsetChange = { offset -> swipeOffset.value = offset },
+            swipeOffset = { swipeOffset.floatValue },
+            onSwipeOffsetChange = { offset -> swipeOffset.floatValue = offset },
             onStartRecording = {
                 val consumed = !isRecordingMessage
                 isRecordingMessage = true
@@ -621,6 +656,118 @@ fun EmojiSelector(
     if (selected == EmojiStickerSelector.STICKER) {
         NotAvailablePopup(onDismissed = { selected = EmojiStickerSelector.EMOJI })
     }
+}
+
+
+// get photo permissions
+@Composable
+fun GetPhotoPermissions(onPermissionGranted: @Composable () -> Unit = {}) {
+    val context = LocalContext.current
+    val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        READ_MEDIA_IMAGES
+    } else {
+        READ_EXTERNAL_STORAGE
+    }
+
+    var hasPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context, permission
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        hasPermission = isGranted
+    }
+
+    // Run this effect only when hasPermission changes
+    LaunchedEffect(hasPermission) {
+        if (!hasPermission) {
+            launcher.launch(permission)
+        }
+    }
+
+    // Display log when permission is granted
+    if (hasPermission) {
+        println("has permission")
+        onPermissionGranted()
+    } else {
+        println("requesting permission")
+    }
+}
+
+
+@Composable
+fun PictureSelector(onPictureSelected: (String) -> Unit) {
+    GetPhotoPermissions {
+        PhotoGrid(onPictureSelected)
+    }
+}
+
+@Composable
+fun PhotoGrid(
+    onPictureSelected: (String) -> Unit,
+    loadMoreThreshold: Int = 10 // Define when to load more images (e.g., 10 items before the end)
+) {
+    val context = LocalContext.current
+    val images = remember { mutableStateListOf<String>() }
+    val gridState = rememberLazyGridState()
+
+    LaunchedEffect(Unit){
+
+        withContext(Dispatchers.IO) {
+            val imageList = fetchImagesFromGallery(context)
+            Log.d("ImageGallery", "Fetched ${imageList.size} images")
+            images.addAll(imageList)
+        }
+
+    }
+    GetPhotoPermissions {
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = 128.dp),
+            state = gridState,
+            modifier = Modifier.fillMaxWidth().height(300.dp)
+        ) {
+            items(images) { imageUri ->
+                AsyncImage(
+                    model = imageUri,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .padding(1.dp)
+                        .aspectRatio(1f).clickable { onPictureSelected(imageUri) },
+                    contentScale = ContentScale.Crop  // Crop the image to fill the available space
+                )
+            }
+        }
+    }
+}
+
+fun fetchImagesFromGallery(context: Context): List<String> {
+    val imageList = mutableListOf<String>()
+    val projection = arrayOf(MediaStore.Images.Media._ID)
+    val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+    val query = context.contentResolver.query(
+        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+        projection,
+        null,
+        null,
+        sortOrder
+    )
+
+    query?.use { cursor ->
+        val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+        while (cursor.moveToNext()) {
+            val id = cursor.getLong(idColumn)
+            val uri =
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI.buildUpon().appendPath(id.toString())
+                    .build().toString()
+            imageList.add(uri)
+        }
+    }
+    return imageList
 }
 
 @Composable
